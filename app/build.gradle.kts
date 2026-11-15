@@ -11,13 +11,29 @@ android {
         applicationId = "com.example.apkshare"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0"
+        // Le numéro de build GitHub augmente à chaque compilation : indispensable pour les mises à jour
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionName = "1.0.$versionCode"
+    }
+
+    // Clé de signature fixe : sans elle, chaque build GitHub est signé différemment
+    // et Android refuse d'installer la mise à jour par-dessus l'ancienne version.
+    signingConfigs {
+        create("shared") {
+            storeFile = file("shared.keystore")
+            storePassword = "android"
+            keyAlias = "shared"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("shared")
         }
     }
     compileOptions {
