@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="received" path="received/" />
+    <!-- Gestionnaire de fichiers : ouvrir / partager / installer un fichier de n'importe quel dossier -->
+    <root-path name="root" path="" />
 </paths>

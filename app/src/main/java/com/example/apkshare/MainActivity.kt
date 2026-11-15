@@ -325,7 +325,7 @@ class MainActivity : AppCompatActivity() {
         binding.laterButton.setOnClickListener { showOutboxDialog() }
         refreshLaterButton()
         binding.fileManagerButton.setOnClickListener {
-            fileManagerLauncher.launch(Intent(this, FileManagerActivity::class.java))
+            startActivity(Intent(this, FileManagerActivity::class.java))
         }
 
         // Au premier affichage : si quelque chose d'obligatoire manque, on l'indique tout de suite
@@ -334,23 +334,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Le gestionnaire de fichiers demande l'ouverture / l'installation d'un fichier reçu
-    private val fileManagerLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val path = result.data?.getStringExtra(FileManagerActivity.EXTRA_OPEN_PATH)
-                ?: return@registerForActivityResult
-            val file = File(path)
-            // Sécurité : on n'ouvre que les fichiers du dossier des fichiers reçus
-            val receivedDir = File(filesDir, "received").canonicalFile
-            if (file.exists() && file.canonicalFile.parentFile == receivedDir) {
-                openReceived(file)
-            }
-        }
-
     override fun onResume() {
         super.onResume()
-        // Le gestionnaire de fichiers a pu renommer ou supprimer des fichiers
+        // Le gestionnaire de fichiers a pu modifier les fichiers reçus ou la file d'envoi
         loadReceivedFiles()
+        refreshLaterButton()
         // Retour des paramètres « Sources inconnues » : on relance l'installation
         val file = pendingInstall
         if (file != null && packageManager.canRequestPackageInstalls()) {
