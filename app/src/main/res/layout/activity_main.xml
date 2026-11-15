@@ -57,6 +57,12 @@
         android:text="Choisir un fichier à envoyer" />
 
     <Button
+        android:id="@+id/laterButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Envoyer plus tard" />
+
+    <Button
         android:id="@+id/stopButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

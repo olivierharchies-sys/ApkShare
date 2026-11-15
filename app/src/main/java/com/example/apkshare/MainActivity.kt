@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.text.format.Formatter
 import android.webkit.MimeTypeMap
 import android.widget.ArrayAdapter
 import android.widget.Toast
@@ -56,6 +57,13 @@ class MainActivity : AppCompatActivity() {
     private val incomingNames = mutableMapOf<Long, String>()
     private val incomingFiles = mutableMapOf<Long, Payload>()
     private val completedIds = mutableSetOf<Long>()
+
+    // « Envoyer plus tard » : fichiers copiés dans filesDir/outbox, envoyés une seule fois
+    // à la prochaine connexion en tant qu'émetteur, puis supprimés de la file.
+    private var isSender = false
+    private val outgoing = mutableMapOf<Long, File>()   // id de payload -> fichier de la file
+    private val outboxDir: File
+        get() = File(filesDir, "outbox").apply { mkdirs() }
 
     private val receivedFiles = mutableListOf<File>()
     private lateinit var listAdapter: ArrayAdapter<String>
@@ -314,6 +322,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         binding.stopButton.setOnClickListener { stopAll() }
+        binding.laterButton.setOnClickListener { showOutboxDialog() }
+        refreshLaterButton()
         binding.fileManagerButton.setOnClickListener {
             fileManagerLauncher.launch(Intent(this, FileManagerActivity::class.java))
         }
@@ -364,6 +374,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startReceiving() {
         stopAll()
+        isSender = false
         val options = AdvertisingOptions.Builder().setStrategy(strategy).build()
         client.startAdvertising(Build.MODEL, serviceId, connectionCallback, options)
             .addOnSuccessListener { setStatus("En attente d'un téléphone émetteur…") }
@@ -374,6 +385,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startSending() {
         stopAll()
+        isSender = true
         val options = DiscoveryOptions.Builder().setStrategy(strategy).build()
         client.startDiscovery(serviceId, discoveryCallback, options)
             .addOnSuccessListener { setStatus("Recherche d'un téléphone récepteur…") }
@@ -418,6 +430,7 @@ class MainActivity : AppCompatActivity() {
                     client.stopDiscovery()
                     binding.pickButton.isEnabled = true
                     setStatus("Connecté. Vous pouvez envoyer ou recevoir des fichiers.")
+                    if (isSender) sendOutbox()
                 }
                 ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED ->
                     setStatus("Connexion refusée.")
@@ -437,6 +450,7 @@ class MainActivity : AppCompatActivity() {
         client.stopDiscovery()
         client.stopAllEndpoints()
         endpointId = null
+        outgoing.clear()   // les fichiers non envoyés restent dans la file
         binding.pickButton.isEnabled = false
         binding.progressBar.progress = 0
     }
@@ -472,6 +486,113 @@ class MainActivity : AppCompatActivity() {
         setStatus("Envoi de $name…")
     }
 
+    // ---------- Envoyer plus tard ----------
+
+    private val pickLater =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            addToOutbox(uris)
+        }
+
+    private fun outboxFiles(): List<File> =
+        outboxDir.listFiles()?.filter { it.isFile }?.sortedBy { it.lastModified() } ?: emptyList()
+
+    private fun refreshLaterButton() {
+        val n = outboxFiles().size
+        binding.laterButton.text = if (n > 0) "Envoyer plus tard ($n en attente)" else "Envoyer plus tard"
+    }
+
+    /** Copie les fichiers choisis dans la file : ils restent disponibles même si l'original change. */
+    private fun addToOutbox(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        setStatus("Ajout de ${uris.size} fichier(s) à la file…")
+        Thread {
+            var ok = 0
+            for (uri in uris) {
+                var dest: File? = null
+                try {
+                    val target = uniqueFile(outboxDir, File(queryName(uri)).name)
+                    dest = target
+                    val input = contentResolver.openInputStream(uri) ?: continue
+                    input.use { i -> target.outputStream().use { o -> i.copyTo(o) } }
+                    ok++
+                } catch (e: Exception) {
+                    dest?.delete()
+                }
+            }
+            runOnUiThread {
+                refreshLaterButton()
+                setStatus(
+                    if (ok == uris.size) "$ok fichier(s) ajouté(s). Ils partiront au prochain envoi."
+                    else "$ok fichier(s) sur ${uris.size} ajouté(s)."
+                )
+                showOutboxDialog()
+            }
+        }.start()
+    }
+
+    private fun showOutboxDialog() {
+        val files = outboxFiles()
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Envoyer plus tard")
+            .setPositiveButton("Ajouter des fichiers") { _, _ ->
+                try {
+                    pickLater.launch(arrayOf("*/*"))
+                } catch (e: Exception) {
+                    setStatus("Aucun sélecteur de fichiers sur cet appareil.")
+                }
+            }
+            .setNegativeButton("Fermer", null)
+        if (files.isEmpty()) {
+            builder.setMessage(
+                "Aucun fichier en attente.\n\nLes fichiers ajoutés ici seront envoyés une seule " +
+                    "fois, au prochain envoi (bouton « Envoyer » puis connexion)."
+            )
+        } else {
+            val labels = files.map { "${it.name}  (${Formatter.formatFileSize(this, it.length())})" }
+            builder
+                .setItems(labels.toTypedArray()) { _, which -> confirmRemoveFromOutbox(files[which]) }
+                .setNeutralButton("Tout retirer") { _, _ ->
+                    files.forEach { it.delete() }
+                    refreshLaterButton()
+                    showOutboxDialog()
+                }
+        }
+        builder.show()
+    }
+
+    private fun confirmRemoveFromOutbox(file: File) {
+        AlertDialog.Builder(this)
+            .setTitle("Retirer de la file ?")
+            .setMessage(file.name)
+            .setPositiveButton("Retirer") { _, _ ->
+                file.delete()
+                refreshLaterButton()
+                showOutboxDialog()
+            }
+            .setNegativeButton("Annuler") { _, _ -> showOutboxDialog() }
+            .show()
+    }
+
+    /** Envoie tous les fichiers en attente ; chacun est retiré de la file une fois reçu. */
+    private fun sendOutbox() {
+        val target = endpointId ?: return
+        var started = 0
+        for (file in outboxFiles()) {
+            if (file in outgoing.values) continue
+            try {
+                val payload = Payload.fromFile(file)
+                val header = "${payload.id}|${file.name}".toByteArray(Charsets.UTF_8)
+                client.sendPayload(target, Payload.fromBytes(header))
+                client.sendPayload(target, payload)
+                outgoing[payload.id] = file
+                started++
+            } catch (e: Exception) {
+                // fichier illisible : il reste dans la file
+            }
+        }
+        if (started > 0) setStatus("Envoi de $started fichier(s) en attente…")
+    }
+
     // ---------- Réception d'un fichier ----------
 
     private val payloadCallback = object : PayloadCallback() {
@@ -501,11 +622,27 @@ class MainActivity : AppCompatActivity() {
                 }
                 PayloadTransferUpdate.Status.SUCCESS -> {
                     binding.progressBar.progress = 100
+                    val sent = outgoing.remove(update.payloadId)
+                    if (sent != null) {
+                        // Envoi « plus tard » réussi : le fichier sort de la file (envoi unique)
+                        sent.delete()
+                        refreshLaterButton()
+                        setStatus(
+                            if (outgoing.isEmpty()) "Envoyé : ${sent.name}. File d'attente terminée."
+                            else "Envoyé : ${sent.name} (reste ${outgoing.size})"
+                        )
+                        return
+                    }
                     completedIds += update.payloadId
                     tryFinish(update.payloadId)
                 }
-                PayloadTransferUpdate.Status.FAILURE ->
-                    setStatus("Échec du transfert.")
+                PayloadTransferUpdate.Status.FAILURE -> {
+                    val failed = outgoing.remove(update.payloadId)
+                    setStatus(
+                        if (failed != null) "Échec : ${failed.name} reste en attente."
+                        else "Échec du transfert."
+                    )
+                }
                 else -> {}
             }
         }
