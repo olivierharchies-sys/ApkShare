@@ -18,6 +18,9 @@
     <!-- Installation d'APK reçus -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Demande d'exclusion de l'économie de batterie -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Compatible Android TV (pas d'écran tactile ni de Bluetooth obligatoires) -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />

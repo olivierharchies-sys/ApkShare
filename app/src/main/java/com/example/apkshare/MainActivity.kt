@@ -1,11 +1,16 @@
 package com.example.apkshare
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.webkit.MimeTypeMap
@@ -16,6 +21,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.location.LocationManagerCompat
 import com.example.apkshare.databinding.ActivityMainBinding
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -42,7 +48,6 @@ class MainActivity : AppCompatActivity() {
     private val strategy = Strategy.P2P_POINT_TO_POINT
 
     private var endpointId: String? = null
-    private var pendingAction: (() -> Unit)? = null
     private var pendingInstall: File? = null
 
     // Réception : association id de payload -> nom de fichier / payload fichier
@@ -53,7 +58,19 @@ class MainActivity : AppCompatActivity() {
     private val receivedFiles = mutableListOf<File>()
     private lateinit var listAdapter: ArrayAdapter<String>
 
-    // ---------- Permissions ----------
+    // ---------- Vérification / correction de la configuration ----------
+
+    private class Check(
+        val label: String,
+        val ok: Boolean,
+        val required: Boolean,
+        val fix: () -> Unit
+    )
+
+    private var pendingReady: (() -> Unit)? = null   // action à lancer quand tout est prêt
+    private var reportMode = false                    // mode « rapport » (bouton Vérifier)
+    private var awaitingSettings = false              // on revient d'un écran de réglages
+    private var checkDialog: AlertDialog? = null
 
     private fun requiredPermissions(): Array<String> {
         val perms = mutableListOf<String>()
@@ -72,27 +89,188 @@ class MainActivity : AppCompatActivity() {
         return perms.toTypedArray()
     }
 
-    private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.values.all { it }) {
-                pendingAction?.invoke()
-            } else {
-                setStatus("Permissions refusées : impossible de se connecter.")
-            }
-            pendingAction = null
-        }
+    private fun buildChecks(): List<Check> {
+        val list = mutableListOf<Check>()
 
-    private fun withPermissions(action: () -> Unit) {
+        // 1. Permissions de l'appli
         val missing = requiredPermissions().filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isEmpty()) {
-            action()
-        } else {
-            pendingAction = action
+        list += Check("Permissions de l'appli (appareils à proximité)", missing.isEmpty(), true) {
             permissionLauncher.launch(missing.toTypedArray())
         }
+
+        // 2. Bluetooth
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH) && adapter != null) {
+            list += Check("Bluetooth activé", adapter.isEnabled, true) {
+                try {
+                    bluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                } catch (e: Exception) {
+                    openSettings(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                }
+            }
+        }
+
+        // 3. Wi-Fi
+        val wifi = applicationContext.getSystemService(WifiManager::class.java)
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI) && wifi != null) {
+            list += Check("Wi-Fi activé", wifi.isWifiEnabled, true) {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    openSettings(
+                        Intent(Settings.Panel.ACTION_WIFI),
+                        Intent(Settings.ACTION_WIFI_SETTINGS)
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    wifi.isWifiEnabled = true
+                    binding.root.postDelayed({ resume() }, 1500)
+                }
+            }
+        }
+
+        // 4. Localisation (nécessaire jusqu'à Android 12L pour la recherche d'appareils)
+        if (Build.VERSION.SDK_INT <= 32) {
+            val lm = getSystemService(LocationManager::class.java)
+            if (lm != null) {
+                list += Check("Localisation activée", LocationManagerCompat.isLocationEnabled(lm), true) {
+                    openSettings(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                }
+            }
+        }
+
+        // 5. Batterie (recommandé : évite que le système coupe la connexion)
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm != null) {
+            list += Check(
+                "Économie de batterie désactivée pour ApkShare (recommandé)",
+                pm.isIgnoringBatteryOptimizations(packageName),
+                false
+            ) {
+                openSettings(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")
+                    ),
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                )
+            }
+        }
+
+        // 6. Installation d'applications inconnues (recommandé)
+        list += Check(
+            "Installation d'applications inconnues autorisée (recommandé)",
+            packageManager.canRequestPackageInstalls(),
+            false
+        ) { openUnknownSourcesSettings() }
+
+        return list
     }
+
+    private fun manufacturerTips(): String? {
+        return when (Build.MANUFACTURER.lowercase()) {
+            "samsung" ->
+                "Samsung : si l'installation est bloquée, désactivez « Blocage automatique » " +
+                    "(Paramètres > Sécurité et confidentialité)."
+            "xiaomi", "redmi", "poco" ->
+                "Xiaomi : autorisez « Démarrage automatique » pour ApkShare, mettez la batterie sur " +
+                    "« Aucune restriction » et vérifiez « Vérification de sécurité » si l'installation échoue."
+            else -> null
+        }
+    }
+
+    /** Lance l'action quand la configuration obligatoire est bonne, sinon propose de corriger. */
+    private fun ensureReady(onReady: () -> Unit) {
+        reportMode = false
+        pendingReady = onReady
+        evaluate()
+    }
+
+    private fun showReport() {
+        pendingReady = null
+        reportMode = true
+        evaluate()
+    }
+
+    private fun resume() {
+        if (pendingReady != null || reportMode) evaluate()
+    }
+
+    private fun evaluate() {
+        val checks = buildChecks()
+        val blocking = checks.filter { !it.ok && (it.required || reportMode) }
+
+        if (blocking.isEmpty() && !reportMode) {
+            val action = pendingReady
+            pendingReady = null
+            action?.invoke()
+            return
+        }
+
+        val sb = StringBuilder()
+        for (c in checks) {
+            sb.append(if (c.ok) "✓ " else if (c.required) "✗ " else "⚠ ")
+                .append(c.label).append('\n')
+        }
+        if (reportMode) {
+            if (blocking.isEmpty()) sb.append("\nTout est configuré.")
+            manufacturerTips()?.let { sb.append("\n\n").append(it) }
+        }
+
+        checkDialog?.dismiss()
+        val builder = AlertDialog.Builder(this)
+            .setTitle(if (reportMode) "Configuration du téléphone" else "Configuration nécessaire")
+            .setMessage(sb.toString().trim())
+            .setCancelable(false)
+        if (blocking.isNotEmpty()) {
+            builder.setPositiveButton("Corriger") { _, _ -> blocking.first().fix() }
+        }
+        builder.setNegativeButton(if (reportMode) "Fermer" else "Annuler") { _, _ ->
+            pendingReady = null
+            reportMode = false
+        }
+        checkDialog = builder.show()
+    }
+
+    private fun openSettings(vararg intents: Intent) {
+        for (intent in intents) {
+            try {
+                awaitingSettings = true
+                startActivity(intent)
+                return
+            } catch (e: Exception) {
+                // on essaie l'écran suivant
+            }
+        }
+        awaitingSettings = false
+        setStatus("Impossible d'ouvrir les réglages : faites-le à la main dans Paramètres.")
+        resume()
+    }
+
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result.values.all { it }) {
+                resume()
+            } else {
+                // « Ne plus demander » : il faut passer par les réglages de l'appli
+                val permanent = result.filter { !it.value }.keys
+                    .any { !shouldShowRequestPermissionRationale(it) }
+                if (permanent) {
+                    setStatus("Autorisez les permissions manquantes dans les réglages de l'appli.")
+                    openSettings(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                } else {
+                    resume()
+                }
+            }
+        }
+
+    private val bluetoothLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { resume() }
 
     // ---------- Cycle de vie ----------
 
@@ -109,8 +287,9 @@ class MainActivity : AppCompatActivity() {
 
         loadReceivedFiles()
 
-        binding.receiveButton.setOnClickListener { withPermissions { startReceiving() } }
-        binding.sendButton.setOnClickListener { withPermissions { startSending() } }
+        binding.checkButton.setOnClickListener { showReport() }
+        binding.receiveButton.setOnClickListener { ensureReady { startReceiving() } }
+        binding.sendButton.setOnClickListener { ensureReady { startSending() } }
         binding.pickButton.setOnClickListener {
             try {
                 pickFile.launch(arrayOf("*/*"))
@@ -120,6 +299,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
         binding.stopButton.setOnClickListener { stopAll() }
+
+        // Au premier affichage : si quelque chose d'obligatoire manque, on l'indique tout de suite
+        if (savedInstanceState == null && buildChecks().any { !it.ok && it.required }) {
+            showReport()
+        }
     }
 
     override fun onResume() {
@@ -130,10 +314,16 @@ class MainActivity : AppCompatActivity() {
             pendingInstall = null
             installApk(file)
         }
+        // Retour d'un écran de réglages ouvert par la vérification
+        if (awaitingSettings) {
+            awaitingSettings = false
+            resume()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        checkDialog?.dismiss()
         stopAll()
     }
 
@@ -392,20 +582,11 @@ class MainActivity : AppCompatActivity() {
 
     // Écran dédié si disponible, sinon repli (certains Android TV n'ont pas cet écran)
     private fun openUnknownSourcesSettings() {
-        val attempts = listOf(
+        openSettings(
             Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
             Intent(Settings.ACTION_SECURITY_SETTINGS),
             Intent(Settings.ACTION_SETTINGS)
         )
-        for (intent in attempts) {
-            try {
-                startActivity(intent)
-                return
-            } catch (e: Exception) {
-                // on essaie l'écran suivant
-            }
-        }
-        setStatus("Ouvrez Paramètres > Sécurité et autorisez ApkShare à installer des applications inconnues.")
     }
 
     private fun setStatus(text: String) {
