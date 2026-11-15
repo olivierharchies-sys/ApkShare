@@ -22,6 +22,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.location.LocationManagerCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.example.apkshare.databinding.ActivityMainBinding
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -82,10 +84,9 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 33) {
             perms += Manifest.permission.NEARBY_WIFI_DEVICES
         }
-        if (Build.VERSION.SDK_INT <= 32) {
-            perms += Manifest.permission.ACCESS_FINE_LOCATION
-            perms += Manifest.permission.ACCESS_COARSE_LOCATION
-        }
+        // Nearby Connections exige la localisation sur toutes les versions (erreur 8034 sinon)
+        perms += Manifest.permission.ACCESS_FINE_LOCATION
+        perms += Manifest.permission.ACCESS_COARSE_LOCATION
         return perms.toTypedArray()
     }
 
@@ -129,8 +130,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 4. Localisation (nécessaire jusqu'à Android 12L pour la recherche d'appareils)
-        if (Build.VERSION.SDK_INT <= 32) {
+        // 4. Localisation (nécessaire à la recherche d'appareils ; absente sur beaucoup de TV)
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_LOCATION)) {
             val lm = getSystemService(LocationManager::class.java)
             if (lm != null) {
                 list += Check("Localisation activée", LocationManagerCompat.isLocationEnabled(lm), true) {
@@ -278,6 +279,20 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Affichage plein écran (Android 15) : on décale le contenu sous la barre d'état
+        val root = binding.root
+        val padL = root.paddingLeft
+        val padT = root.paddingTop
+        val padR = root.paddingRight
+        val padB = root.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            v.setPadding(padL + bars.left, padT + bars.top, padR + bars.right, padB + bars.bottom)
+            insets
+        }
 
         listAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf())
         binding.receivedList.adapter = listAdapter
