@@ -2,6 +2,7 @@ name: Build APK
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -17,14 +18,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.7
+          gradle-version: 8.9
 
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
-          name: apkshare-apk
-          path: "**/build/outputs/apk/debug/*.apk"
-          if-no-files-found: error
+          name: ApkShare-debug
+          path: app/build/outputs/apk/debug/*.apk
           retention-days: 1
