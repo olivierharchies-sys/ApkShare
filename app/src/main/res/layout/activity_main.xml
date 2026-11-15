@@ -62,6 +62,12 @@
         android:layout_height="wrap_content"
         android:text="Arrêter / Déconnecter" />
 
+    <Button
+        android:id="@+id/fileManagerButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Gestionnaire de fichiers" />
+
     <ProgressBar
         android:id="@+id/progressBar"
         style="?android:attr/progressBarStyleHorizontal"
