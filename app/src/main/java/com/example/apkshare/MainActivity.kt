@@ -111,7 +111,14 @@ class MainActivity : AppCompatActivity() {
 
         binding.receiveButton.setOnClickListener { withPermissions { startReceiving() } }
         binding.sendButton.setOnClickListener { withPermissions { startSending() } }
-        binding.pickButton.setOnClickListener { pickFile.launch(arrayOf("*/*")) }
+        binding.pickButton.setOnClickListener {
+            try {
+                pickFile.launch(arrayOf("*/*"))
+            } catch (e: Exception) {
+                // Android TV : pas de sélecteur de fichiers sur beaucoup de modèles
+                setStatus("Aucun sélecteur de fichiers sur cet appareil : utilisez-le comme récepteur.")
+            }
+        }
         binding.stopButton.setOnClickListener { stopAll() }
     }
 
@@ -367,14 +374,7 @@ class MainActivity : AppCompatActivity() {
                     "Pour installer un APK, autorisez ApkShare à installer des applications " +
                         "inconnues dans les paramètres qui vont s'ouvrir."
                 )
-                .setPositiveButton("Ouvrir les paramètres") { _, _ ->
-                    startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                            Uri.parse("package:$packageName")
-                        )
-                    )
-                }
+                .setPositiveButton("Ouvrir les paramètres") { _, _ -> openUnknownSourcesSettings() }
                 .setNegativeButton("Annuler") { _, _ -> pendingInstall = null }
                 .show()
             return
@@ -388,6 +388,24 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             setStatus("Impossible de lancer l'installation : ${e.message}")
         }
+    }
+
+    // Écran dédié si disponible, sinon repli (certains Android TV n'ont pas cet écran)
+    private fun openUnknownSourcesSettings() {
+        val attempts = listOf(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
+            Intent(Settings.ACTION_SECURITY_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS)
+        )
+        for (intent in attempts) {
+            try {
+                startActivity(intent)
+                return
+            } catch (e: Exception) {
+                // on essaie l'écran suivant
+            }
+        }
+        setStatus("Ouvrez Paramètres > Sécurité et autorisez ApkShare à installer des applications inconnues.")
     }
 
     private fun setStatus(text: String) {

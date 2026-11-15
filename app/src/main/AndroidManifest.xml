@@ -18,8 +18,16 @@
     <!-- Installation d'APK reçus -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Compatible Android TV (pas d'écran tactile ni de Bluetooth obligatoires) -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+
     <application
         android:allowBackup="true"
+        android:banner="@drawable/tv_banner"
         android:label="@string/app_name"
         android:theme="@style/Theme.ApkShare">
 
@@ -29,6 +37,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
 
